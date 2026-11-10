@@ -2,7 +2,8 @@
 
 Used when MODEL_DIR has a rag/ folder (finetune/package_assistant.py). Per question:
 1. Whisper (already loaded for the audio encoder) transcribes it.
-2. The fine-tuned retriever finds the top-k topics over the example wordings.
+2. The fine-tuned retriever finds the top-k topics over the example wordings, for the question without the chatter
+   around it (question_parts) and for its main part. A bare acknowledgement ("Of course.") gets no answer (ack).
 3. The k answers go in front of the question (training layout) and the model answers. The retrieval is trusted when
    the best wording is close to the question (score >= MIN_SCORE: off-topic questions match nothing well) or clearly
    ahead of the second (margin >= MIN_MARGIN); otherwise only a redirect is accepted and any other answer becomes
@@ -24,6 +25,25 @@ AFTER = re.compile(r"\b(after (that|this|it)|afterwards|then what|and then|next|
 # a bare "why?" / "how?" / "tell me more" is always about the previous answer, however well it matches on its own
 BARE = re.compile(r"^\W*(and\s+|so\s+)?(why|how|how so|really|when|where|what else|tell me more|go on|in what way)\W*$", re.I)
 REFERS = re.compile(r"\b(that|there|it|this|those|they|them|then)\b|^\W*(why|how|when|where|really|and)\W*$", re.I)
+# an acknowledgement that needs no answer ("Of course.", "That's really impressive.", "Got it.")
+ACK = re.compile(r"^\W*((ok(ay)?|right|sure|great|cool|nice|wow|yes|yeah|no|nope|exactly|indeed|perfect|understood|"
+                 r"of course|got it|i see|i understand|that one|fair enough|makes sense|that makes( a lot of)? sense|"
+                 r"(that'?s|that is|it'?s|how) (really |very |so )?(great|good|interesting|impressive|clear|helpful|"
+                 r"fascinating|amazing|cool|nice|insightful|comprehensive|a great point))\W*)+$", re.I)
+# chatty visitors: "That's really impressive. So what did you do at X? And how did Y?" -> the question parts only
+ASKS = re.compile(r"\?|^\W*(and |so |but |okay |ok |now )*(what|how|why|when|where|who|whom|which|can|could|would|will|did|do|"
+                  r"does|have|has|had|are|is|were|was|tell|describe|walk|explain|give|share|talk|any)\b", re.I)
+
+
+def question_parts(text):
+    """The parts of an utterance that ask something: leading acknowledgements and summaries are dropped, and a
+    multi-part question ("What did you do at X? And how did it help Y?") is split, so each part can be searched."""
+    sentences = [x.strip() for x in re.split(r"(?<=[.?!])\s+", text.strip()) if x.strip()]
+    asks = [x for x in sentences if ASKS.search(x)]
+    parts = []
+    for x in asks:
+        parts += [y.strip(" ,") for y in re.split(r",? and (?=(?:what|how|why|when|where|who|which|did|do|does|have|has|were|was|are|is)\b)", x, flags=re.I) if y.strip(" ,")]
+    return asks, parts
 
 import numpy as np
 
@@ -37,7 +57,7 @@ def words(s):
 class RagFront:
     def __init__(self, rag_dir, tok, device="cuda", k=2, min_margin=0.02,
                  min_score=float(os.environ.get("RAG_MIN_SCORE", 0.85)),
-                 rescue_score=float(os.environ.get("RAG_RESCUE_SCORE", 0.90))):
+                 rescue_score=float(os.environ.get("RAG_RESCUE_SCORE", 0.85))):
         import soundfile as sf
 
         import threading
@@ -101,8 +121,21 @@ class RagFront:
     def prepare(self, question_text, prev=None):
         """-> dict(topics, scores, margin, confident, ctx_ids, starts, followup) for AnswerSeq.
         prev: {"q": the previous question, "topic": its answer's topic}, for follow-up questions."""
-        found = self.retriever.search(question_text, k=self.k)
+        heard = question_text
+        asks, parts = question_parts(question_text)
+        if ACK.match(question_text):  # "Of course.", "That's really impressive.": nothing to answer
+            found = self.retriever.search(question_text, k=self.k)
+            if found[0][1] < self.min_score:  # (but "Thanks!" or "Hello" are small-talk topics with an answer)
+                return {"ack": True, "topics": [t for t, _ in found], "scores": [s for _, s in found], "margin": 0.0,
+                        "confident": False, "followup": None, "focus": question_text}
+        if asks:
+            question_text = " ".join(asks)
+        # the question without the chatter, and its first part alone ("What was your role at X?" of "What was your role
+        # at X, and what did you learn?"): the better match wins. Later parts are details, which match vaguely.
+        found = max((self.retriever.search(q, k=self.k) for q in [question_text] + parts[:1] if q),
+                    key=lambda f: f[0][1])
         followup = None
+        main = parts[0] if parts else question_text
         if prev and BARE.match(question_text):
             found, followup = self.retriever.search(prev["q"] + " " + question_text, k=self.k), "bare follow-up"
         elif prev and found[0][1] < self.min_score:  # weak on its own: maybe it refers to the previous question
@@ -111,7 +144,7 @@ class RagFront:
             if near:  # "and before that?": the previous topic's neighbour in time, as a sure match
                 found = [(near, max(self.rescue_score, found[0][1]))] + [x for x in found if x[0] != near][: self.k - 1]
                 followup = f"timeline {'before' if step < 0 else 'after'} {prev['topic']}"
-            elif REFERS.search(question_text) or len(words(question_text)) <= 4:
+            elif REFERS.search(main) or len(words(main)) <= 4:  # in the main question, not its later details
                 both = self.retriever.search(prev["q"] + " " + question_text, k=self.k)
                 if both[0][1] > found[0][1]:
                     found, followup = both, "with the previous question"
@@ -126,7 +159,8 @@ class RagFront:
         rescue = topics[0] if scores[0] >= self.rescue_score and topics[0] in self.clips else None
         return {"topics": topics, "scores": scores, "margin": margin, "confident": confident,
                 "ctx_ids": self.tok.encode(ctx).ids, "allowed": [words(x) for x in allowed],
-                "allowed_text": allowed, "rescue": rescue, "followup": followup}
+                "allowed_text": allowed, "rescue": rescue, "followup": followup,
+                "focus": question_text if question_text != heard else None}
 
     def answer_for(self, rag, text_words, n):
         """Which allowed answer the text starts like: a topic, "_redirect", or None."""

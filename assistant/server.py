@@ -172,11 +172,17 @@ def make_app(cfg, assistant):
                     if not any(c.isalnum() for c in heard):  # nothing intelligible
                         await sock.send_json({"type": "done", "id": qid, "empty": True, "rephrase": False, "stopped": False, "stats": {}})
                         return
+                    if prep.get("ack"):  # "Of course.", "That's impressive.": nothing to answer, so say nothing
+                        if cfg.log_questions:
+                            print(f"heard {heard!r}: acknowledgement, no reply", flush=True)
+                        await sock.send_json({"type": "done", "id": qid, "empty": True, "rephrase": False, "stopped": False, "stats": {}})
+                        return
                     if cfg.log_questions:  # testing: what was heard and retrieved (visitors' questions, so off by default)
                         print(f"heard {heard!r} -> {prep['topics']} score {prep['scores'][0]:.3f} margin {prep['margin']:.3f}"
-                              + (f" (follow-up: {prep['followup']})" if prep.get("followup") else ""), flush=True)
+                              + (f" (follow-up: {prep['followup']})" if prep.get("followup") else "")
+                              + (f" (searched: {prep['focus']!r})" if prep.get("focus") else ""), flush=True)
                     if prep["confident"]:  # remembered for a follow-up question ("and before that?")
-                        last["prev"] = {"q": heard, "topic": prep["topics"][0]}
+                        last["prev"] = {"q": prep.get("focus") or heard, "topic": prep["topics"][0]}
                 if not batcher.free:  # every slot answering someone: this one starts when a slot frees up
                     await sock.send_json({"type": "queued", "id": qid, "position": batcher.pending.qsize() + 1})
                 batcher.submit(AnswerSeq(assistant, wav, emit, stop.is_set, rag=prep))

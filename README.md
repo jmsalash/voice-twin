@@ -57,6 +57,9 @@ question (speech) ─▶ Whisper transcript ─▶ retriever: 2 closest answers 
 * **Safety rules** (`assistant/rag.py`): an answer must be one of the retrieved ones or a fallback line; questions
   that match nothing well only get a fallback; a clear question the model refuses gets the retrieved answer's
   recording. The details and a worked example are in [docs/HOW_IT_WORKS.md](docs/HOW_IT_WORKS.md).
+* **Chatty visitors.** Before the search, leading acknowledgements and summaries ("That's really impressive. So...")
+  are dropped and a multi-part question is searched by its main part; a bare acknowledgement ("Of course.", "Got
+  it.") gets no reply.
 
 Measured on the author's assistant (86 topics, 111 held-out spoken questions, GTX 1070): with the default
 transcript, 77 of 86 career questions got the right answer (first audio 0.8 s median); with `ASR_MODEL` set to
@@ -173,7 +176,7 @@ each question ends) and has a Mute button. Settings that matter:
 | `MAX_SESSIONS`, `SLOTS` | open conversations / answers generated together on the GPU |
 | `ASR_MODEL` | optional faster-whisper folder (e.g. large-v3-turbo, 8-bit) for the transcript: hears short questions better, about +0.35 s |
 | `RECORDED_ANSWERS` | 1 (default): play the recorded answer the model chose; 0: stream the model's own generated voice |
-| `RAG_MIN_SCORE`, `RAG_RESCUE_SCORE` | retrieval trust thresholds (0.85 / 0.90) |
+| `RAG_MIN_SCORE`, `RAG_RESCUE_SCORE` | retrieval trust thresholds (both 0.85) |
 | `LOG_QUESTIONS` | 1 logs what was heard and answered, and why (testing; visitors' questions, so off by default) |
 | `SSL_CERTFILE`, `SSL_KEYFILE` | HTTPS directly, for testing on a LAN (the microphone needs HTTPS) |
 
