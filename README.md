@@ -118,7 +118,8 @@ Then, from `finetune/`:
 | `train_retriever.py --manifest work/cv/manifest.ov.jsonl --out work/retriever` | fine-tune the retriever on the wordings | ~1 min |
 | `rag_context.py --manifests ... --retriever work/retriever --patch-encoded work/encoded` | put the 2 retrieved answers in front of every training question | ~1 min |
 
-OmniVoice runs in its own environment (`pip install omnivoice`); its weights are CC-BY-NC, non-commercial use only.
+OmniVoice runs in its own environment (`pip install omnivoice`). Its weights are CC-BY-NC: **a voice made with it,
+and a model trained on that voice, are non-commercial** ([NOTICE.md](NOTICE.md)). Kokoro voices have no such limit.
 The off-topic answers: the fallback lines, e.g. "I'm sorry, my responses are limited. You must ask the right
 questions. For example, ask me what I did at my last company." Several lines, so it doesn't repeat itself.
 
@@ -219,4 +220,6 @@ training pipeline, retrieval, server and data tools are this project's own.
 | [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) / [kokoro-onnx](https://github.com/thewh1teagle/kokoro-onnx) (question voices) | Apache-2.0 / MIT |
 | [OmniVoice](https://huggingface.co/k2-fsa/OmniVoice) (answer voice, optional) | weights CC-BY-NC 4.0: non-commercial |
 
-This project's own code is released under the [MIT licence](LICENSE).
+This project's own code is released under the [MIT licence](LICENSE), the same as Mini-Omni2. **If you clone the
+voice with OmniVoice, the result is non-commercial**: OmniVoice's weights are CC-BY-NC, so treat the generated audio
+and any model trained on it as non-commercial. See [NOTICE.md](NOTICE.md).
