@@ -150,4 +150,4 @@ examples: check the current ones in the vad-web README and pin the versions you 
 
 A server on a LAN with a self-signed certificate (`SSL_CERTFILE`/`SSL_KEYFILE`) works for testing: first open
 `https://<server-ip>:8765/health` in the browser and accept the certificate warning, otherwise the page's `wss://`
-connection fails silently. The server also serves a push-to-talk test page at `https://<server-ip>:8765/`.
+connection fails silently. The server also serves a hands-free test page (always listening, with a Mute button) at `https://<server-ip>:8765/`.

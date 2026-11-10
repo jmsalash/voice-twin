@@ -3,13 +3,16 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>CV voice assistant: test page</title>
+<title>Voice assistant: test page</title>
 <style>
   body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
-  button { font-size: 18px; padding: 18px 28px; border-radius: 40px; border: 0; background: #1f4e8c; color: #fff; cursor: pointer; user-select: none; }
-  button.on { background: #c0392b; }
+  button { font-size: 18px; padding: 16px 26px; border-radius: 40px; border: 0; background: #1f4e8c; color: #fff; cursor: pointer; user-select: none; }
+  button.muted { background: #c0392b; }
   button:disabled { background: #999; cursor: default; }
-  #status { color: #666; margin: 12px 0; }
+  #status { color: #666; margin: 12px 0; display: flex; align-items: center; gap: 10px; }
+  #level { width: 120px; height: 8px; background: #eee; border-radius: 4px; overflow: hidden; }
+  #level div { height: 100%; width: 0; background: #2e7d4f; transition: width 60ms; }
+  #level.speech div { background: #c0392b; }
   .turn { border-top: 1px solid #eee; padding: 10px 0; }
   .you { color: #555; } .it { color: #111; }
   .meta { color: #999; font-size: 13px; }
@@ -17,19 +20,29 @@
 </style>
 </head>
 <body>
-<h1>CV voice assistant</h1>
-<p>Hold the button (or the space bar) while you ask a question, then release it. Press it again while it is talking to
-interrupt.</p>
+<h1>Voice assistant</h1>
+<p>Start the conversation and just talk: it listens all the time and answers when you pause. Talk over an answer to
+interrupt it. Use <b>Mute</b> (or the M key) when you don't want it to listen.</p>
 <p class="label"><b>AI voice.</b> Not a live person, and it can make mistakes.</p>
 <button id="start">Start conversation</button>
-<button id="talk" disabled hidden>Hold to talk</button>
-<div id="status">Press "Start conversation" to begin.</div>
+<button id="mute" hidden>Mute</button>
+<div id="status"><span id="level" hidden><div></div></span><span id="msg">Press "Start conversation" to begin.</span></div>
 <div id="log"></div>
 <script>
+// Hands-free: an energy voice detector decides where a question starts and ends (for a website, the Silero VAD in
+// docs/WEBSITE_INTEGRATION.md is more robust to noise). The question is kept here and sent whole when it ends.
+const SR = 16000, FRAME = 512;                 // mic-processor.js frames: 32 ms
+const START_FRAMES = 3;                        // ~0.1 s above the threshold starts a question
+const END_FRAMES = 25;                         // ~0.8 s of quiet ends it
+const PRE_FRAMES = 10;                         // ~0.3 s kept from before the start, so the first word isn't cut
+const MAX_FRAMES = Math.round(20 * SR / FRAME); // the server takes up to ~20 s
+const MIN_RMS = 0.012;                         // never trigger below this, however quiet the room
+
 const $ = (id) => document.getElementById(id);
-const log = $("log"), status = $("status"), btn = $("talk");
-let ws, micCtx, micNode, outCtx, nextTime = 0, sources = [], talking = false, turn = null, t0 = 0;
-let qid = 0, currentId = "disclaimer";  // replies carry the question id: anything from an older question is dropped
+const log = $("log"), msg = $("msg"), muteBtn = $("mute"), level = $("level");
+let ws, micCtx, outCtx, nextTime = 0, sources = [], turn = null, t0 = 0, muted = false, ready = false;
+let qid = 0, currentId = "disclaimer";         // replies carry the question id: anything older is dropped
+let noise = 0.005, pre = [], speech = null, loud = 0, quiet = 0;
 
 function b64(int16) {
   let s = "", b = new Uint8Array(int16.buffer);
@@ -53,11 +66,54 @@ function play(base64) {
   sources.push(src);
   src.onended = () => { sources = sources.filter((x) => x !== src); };
 }
+const speaking = () => sources.length > 0;
+function setStatus(t) { msg.textContent = t; }
+function listeningStatus() { setStatus(muted ? "Muted: press Mute again (or M) to talk." : "Listening…"); }
 function newTurn() {
   turn = document.createElement("div"); turn.className = "turn";
   turn.innerHTML = '<div class="you">You: <i>…</i></div><div class="it"></div><div class="meta"></div>';
   log.prepend(turn);
 }
+
+// ----- the voice detector -----
+function rms(f) { let s = 0; for (let i = 0; i < f.length; i++) s += f[i] * f[i]; return Math.sqrt(s / f.length); }
+function onFrame(f) {
+  const e = rms(f);
+  // while the assistant talks, ask for more: echo cancellation leaves some of its voice in the mic
+  const thr = Math.max(MIN_RMS, noise * 3) * (speaking() ? 2 : 1);
+  level.querySelector("div").style.width = Math.min(100, 100 * e / (thr * 3)) + "%";
+  level.classList.toggle("speech", !!speech);
+  if (muted || !ready) { pre = []; speech = null; loud = 0; return; }
+  if (!speech) {
+    if (e < thr) noise = 0.95 * noise + 0.05 * e;  // follow the room's background level
+    pre.push(f); if (pre.length > PRE_FRAMES) pre.shift();
+    loud = e >= thr ? loud + 1 : 0;
+    if (loud >= START_FRAMES) startQuestion();
+    return;
+  }
+  speech.push(f);
+  quiet = e >= thr ? 0 : quiet + 1;
+  if (quiet >= END_FRAMES || speech.length >= MAX_FRAMES) endQuestion();
+}
+function startQuestion() {
+  if (speaking()) { ws.send(JSON.stringify({ type: "stop" })); stopPlayback(); }  // talked over the answer
+  currentId = null;                               // ignore whatever is still arriving for the old question
+  speech = pre.slice(); pre = []; quiet = 0; loud = 0;
+  setStatus("Hearing you…");
+}
+function endQuestion() {
+  const frames = speech.slice(0, speech.length - Math.min(quiet, END_FRAMES - 5)); speech = null; quiet = 0;
+  const n = frames.length * FRAME, pcm = new Int16Array(n);
+  frames.forEach((f, k) => { for (let i = 0; i < FRAME; i++) pcm[k * FRAME + i] = Math.max(-1, Math.min(1, f[i])) * 32767; });
+  for (let i = 0; i < n; i += 8000) ws.send(JSON.stringify({ type: "audio", data: b64(pcm.subarray(i, i + 8000).slice()) }));
+  newTurn();
+  t0 = performance.now();
+  currentId = ++qid;
+  ws.send(JSON.stringify({ type: "end", id: currentId }));
+  setStatus("Thinking…");
+}
+
+// ----- the conversation -----
 function connect() {
   ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
   ws.onopen = () => ws.send(JSON.stringify({ type: "hello" }));
@@ -65,60 +121,47 @@ function connect() {
     const m = JSON.parse(ev.data);
     if (m.id !== undefined && m.id !== currentId) return;  // leftovers of an interrupted answer
     if (m.id === "disclaimer" && !turn) { newTurn(); turn.querySelector(".you").textContent = ""; }
-    if (m.type === "ready") { status.textContent = "Ready."; btn.disabled = false; btn.hidden = false; $("start").hidden = true; }
-    else if (m.type === "busy") status.textContent = "The assistant is talking to someone else. Try again in a minute.";
+    if (m.type === "ready") { ready = true; muteBtn.hidden = false; level.hidden = false; $("start").hidden = true; listeningStatus(); }
+    else if (m.type === "busy") setStatus("The assistant is talking to someone else. Try again in a minute.");
     else if (m.type === "heard" && turn) turn.querySelector(".you").textContent = "You: " + m.text;
-    else if (m.type === "queued") status.textContent = "One moment…";
+    else if (m.type === "queued") setStatus("One moment…");
     else if (m.type === "text" && turn) turn.querySelector(".it").textContent += m.text;
     else if (m.type === "audio") {
-      if (turn && !turn.dataset.first) { turn.dataset.first = 1; turn.querySelector(".meta").textContent = `first audio ${((performance.now() - t0) / 1000).toFixed(2)} s`; }
+      if (turn && !turn.dataset.first && m.id !== "disclaimer") { turn.dataset.first = 1; turn.querySelector(".meta").textContent = `first audio ${((performance.now() - t0) / 1000).toFixed(2)} s`; }
       play(m.data);
     }
-    else if (m.type === "done" && m.empty) { status.textContent = "I didn't hear anything. Hold the button while you speak."; if (turn) turn.remove(); turn = null; }
-    else if (m.type === "done") { status.textContent = m.rephrase ? "Ready (it asked you to rephrase)." : "Ready."; }
-    else if (m.type === "limit") status.textContent = "Session limit reached: reload the page to start again.";
-    else if (m.type === "error") status.textContent = "Error: " + m.message;
+    else if (m.type === "done" && m.empty) { if (turn) turn.remove(); turn = null; listeningStatus(); }  // a noise, not a question
+    else if (m.type === "done") listeningStatus();
+    else if (m.type === "limit") { ready = false; setStatus("Session limit reached: reload the page to start again."); }
+    else if (m.type === "error") setStatus("Error: " + m.message);
   };
-  ws.onclose = () => { btn.disabled = true; status.textContent = "Disconnected. Reload the page to reconnect."; };
+  ws.onclose = () => { ready = false; muteBtn.disabled = true; setStatus("Disconnected. Reload the page to reconnect."); };
 }
 async function setupAudio() {
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
-  micCtx = new AudioContext({ sampleRate: 16000 });
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 } });
+  micCtx = new AudioContext({ sampleRate: SR });
   await micCtx.audioWorklet.addModule("mic-processor.js");
-  micNode = new AudioWorkletNode(micCtx, "mic-processor");
-  micNode.port.onmessage = (ev) => {
-    if (!talking || ws.readyState !== 1) return;
-    const f = ev.data, pcm = new Int16Array(f.length);
-    for (let i = 0; i < f.length; i++) pcm[i] = Math.max(-1, Math.min(1, f[i])) * 32767;
-    ws.send(JSON.stringify({ type: "audio", data: b64(pcm) }));
-  };
-  micCtx.createMediaStreamSource(stream).connect(micNode);
+  const node = new AudioWorkletNode(micCtx, "mic-processor");
+  node.port.onmessage = (ev) => onFrame(ev.data);
+  micCtx.createMediaStreamSource(stream).connect(node);
   outCtx = new AudioContext({ sampleRate: 24000 });
 }
-async function start() {
-  if (talking || btn.disabled) return;
-  if (!micCtx) await setupAudio();
-  await micCtx.resume(); await outCtx.resume();
-  if (sources.length) { ws.send(JSON.stringify({ type: "stop" })); stopPlayback(); }  // interrupt
-  currentId = null;  // until this question is sent, ignore whatever is still arriving
-  talking = true; btn.classList.add("on"); btn.textContent = "Listening… release to send";
-  newTurn();
+function toggleMute() {
+  if (muteBtn.hidden) return;
+  muted = !muted;
+  muteBtn.textContent = muted ? "Unmute" : "Mute";
+  muteBtn.classList.toggle("muted", muted);
+  listeningStatus();
 }
-function end() {
-  if (!talking) return;
-  talking = false; btn.classList.remove("on"); btn.textContent = "Hold to talk";
-  t0 = performance.now();
-  currentId = ++qid;
-  ws.send(JSON.stringify({ type: "end", id: currentId })); status.textContent = "Thinking…";
-}
-btn.addEventListener("pointerdown", start);
-btn.addEventListener("pointerup", end);
-btn.addEventListener("pointerleave", end);
-document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); start(); } });
-document.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); end(); } });
-$("start").addEventListener("click", async () => {  // a click first: browsers only play sound after one
-  $("start").disabled = true; status.textContent = "Connecting…";
-  await setupAudio(); await outCtx.resume();
+muteBtn.addEventListener("click", toggleMute);
+document.addEventListener("keydown", (e) => { if (e.code === "KeyM" && !e.repeat) toggleMute(); });
+$("start").addEventListener("click", async () => {  // a click first: browsers only use the mic and play sound after one
+  $("start").disabled = true; setStatus("Connecting…");
+  try {
+    await setupAudio(); await micCtx.resume(); await outCtx.resume();
+  } catch (e) {
+    $("start").disabled = false; setStatus("No microphone: " + e.message); return;
+  }
   connect();
 });
 </script>

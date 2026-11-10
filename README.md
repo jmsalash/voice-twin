@@ -163,7 +163,8 @@ directly:
 MODEL_DIR=/path/to/my-assistant WHISPER_PATH=models/mini-omni2/small.pt python assistant/server.py
 ```
 
-Then open `http://localhost:8765/` for the push-to-talk test page. Settings that matter:
+Then open `http://localhost:8765/` for the test page: it listens all the time (a simple loudness detector finds where
+each question ends) and has a Mute button. Settings that matter:
 
 | setting | |
 |---|---|
