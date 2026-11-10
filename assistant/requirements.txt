@@ -1,0 +1,10 @@
+# Server dependencies (the base image provides torch 2.5.1 + CUDA 12.4). Versions as tested.
+numpy==1.26.4
+fastapi==0.162.0
+uvicorn[standard]==0.54.0
+openai-whisper==20250625
+snac==1.2.0
+tokenizers==0.21.4
+soundfile==0.14.0
+transformers==4.51.3   # the RAG retriever
+faster-whisper==1.2.1  # optional transcript model (ASR_MODEL)

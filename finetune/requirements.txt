@@ -1,0 +1,14 @@
+# Fine-tuning pipeline (install CUDA PyTorch first, from pytorch.org, for your CUDA version)
+torch>=2.3
+numpy<2.3
+openai-whisper
+snac==1.2.1
+tokenizers
+librosa
+soundfile
+pyarrow
+huggingface_hub
+kokoro-onnx
+transformers        # the retriever (train_retriever.py, rag_context.py)
+# Optional: OmniVoice (voice cloning) runs in its own environment (pip install omnivoice), see README.
+# Running a fine-tuned model in the browser needs mini-omni2-web's export/ requirements instead.

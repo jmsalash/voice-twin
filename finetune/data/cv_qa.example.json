@@ -1,0 +1,34 @@
+{
+  "_about": "Spoken Q&A about a CV. Copy to cv_qa.json and replace with real content. Each item: several phrasings of one question and one spoken answer (third person, 1-3 short sentences, written for speech: no URLs, symbols or abbreviations the voice can't say). Items with \"unknown\": true teach the model to say it doesn't know instead of inventing facts. Anything here can be said to any visitor: leave private details (phone, address) out. Ada Example is a made-up person.",
+  "person": "Ada Example",
+  "items": [
+    {
+      "id": "who",
+      "questions": ["Who is Ada Example?", "Who is Ada?", "Tell me about Ada.", "Who is this website about?"],
+      "answer": "Ada Example is a software engineer who builds speech and language tools. She has ten years of experience in startups and research labs."
+    },
+    {
+      "id": "assistant",
+      "assistant": true,
+      "questions": ["Who are you?", "What are you?", "What can you do?"],
+      "answer": "I'm a voice assistant on Ada Example's website. You can ask me about her work, her education and her projects."
+    },
+    {
+      "id": "education",
+      "questions": ["Where did Ada study?", "What's her education?", "Does she have a degree?"],
+      "answer": "She studied computer science at an example university, and later did a master's degree in machine learning."
+    },
+    {
+      "id": "unknown_age",
+      "unknown": true,
+      "questions": ["How old is Ada?", "What's her age?", "When was she born?"],
+      "answer": "Her CV doesn't say her age, so I can't tell you that."
+    },
+    {
+      "id": "unknown_salary",
+      "unknown": true,
+      "questions": ["What salary does she expect?", "How much does she charge?"],
+      "answer": "That's not in her CV. You'd need to ask her directly."
+    }
+  ]
+}

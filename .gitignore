@@ -1,0 +1,12 @@
+# personal data and everything generated: keep it out of the repo
+finetune/data/*
+!finetune/data/cv_qa.example.json
+finetune/work*/
+finetune/*.pdf
+finetune/*.pth
+finetune/*.zip
+cv/
+assistant/.env
+__pycache__/
+*.pyc
+.venv/

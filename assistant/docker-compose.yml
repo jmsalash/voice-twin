@@ -1,0 +1,41 @@
+# docker compose -f assistant/docker-compose.yml up -d        (start; add --build after code changes)
+# docker compose -f assistant/docker-compose.yml down          (stop)
+# Settings: assistant/.env (copy assistant/.env.example).
+services:
+  assistant:
+    build:
+      context: ..
+      dockerfile: assistant/Dockerfile
+    image: mini-omni2-assistant:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:${PORT:-8765}:8765"   # local only: the tunnel (or a reverse proxy) is the way in
+    volumes:
+      - ${MODEL_DIR:?set MODEL_DIR in assistant/.env}:/models/assistant:ro
+    environment:
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-}
+      TURNSTILE_SECRET: ${TURNSTILE_SECRET:-}
+      MAX_SESSIONS: ${MAX_SESSIONS:-4}
+      SLOTS: ${SLOTS:-4}
+      SESSION_SECONDS: ${SESSION_SECONDS:-300}
+      MAX_TURNS: ${MAX_TURNS:-20}
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+
+  # Optional: a Cloudflare Tunnel to the assistant (docker compose --profile tunnel up -d).
+  # Create the tunnel in the Cloudflare dashboard, point its public hostname at http://assistant:8765,
+  # and put its token in TUNNEL_TOKEN.
+  tunnel:
+    profiles: ["tunnel"]
+    image: cloudflare/cloudflared:latest
+    restart: unless-stopped
+    command: tunnel --no-autoupdate run
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:-}
+    depends_on:
+      - assistant

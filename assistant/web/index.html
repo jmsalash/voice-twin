@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>CV voice assistant: test page</title>
+<style>
+  body { font: 16px/1.5 system-ui, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; color: #222; }
+  button { font-size: 18px; padding: 18px 28px; border-radius: 40px; border: 0; background: #1f4e8c; color: #fff; cursor: pointer; user-select: none; }
+  button.on { background: #c0392b; }
+  button:disabled { background: #999; cursor: default; }
+  #status { color: #666; margin: 12px 0; }
+  .turn { border-top: 1px solid #eee; padding: 10px 0; }
+  .you { color: #555; } .it { color: #111; }
+  .meta { color: #999; font-size: 13px; }
+  .label { background: #fff6d6; border: 1px solid #ecd98a; border-radius: 6px; padding: 6px 10px; display: inline-block; }
+</style>
+</head>
+<body>
+<h1>CV voice assistant</h1>
+<p>Hold the button (or the space bar) while you ask a question, then release it. Press it again while it is talking to
+interrupt.</p>
+<p class="label"><b>AI voice.</b> Not a live person, and it can make mistakes.</p>
+<button id="start">Start conversation</button>
+<button id="talk" disabled hidden>Hold to talk</button>
+<div id="status">Press "Start conversation" to begin.</div>
+<div id="log"></div>
+<script>
+const $ = (id) => document.getElementById(id);
+const log = $("log"), status = $("status"), btn = $("talk");
+let ws, micCtx, micNode, outCtx, nextTime = 0, sources = [], talking = false, turn = null, t0 = 0;
+let qid = 0, currentId = "disclaimer";  // replies carry the question id: anything from an older question is dropped
+
+function b64(int16) {
+  let s = "", b = new Uint8Array(int16.buffer);
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode(...b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function stopPlayback() {
+  for (const s of sources) { try { s.stop(); } catch {} }
+  sources = []; nextTime = 0;
+}
+function play(base64) {
+  const bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+  const pcm = new Int16Array(bytes.buffer);
+  const buf = outCtx.createBuffer(1, pcm.length, 24000);
+  const ch = buf.getChannelData(0);
+  for (let i = 0; i < pcm.length; i++) ch[i] = pcm[i] / 32768;
+  const src = outCtx.createBufferSource();
+  src.buffer = buf; src.connect(outCtx.destination);
+  nextTime = Math.max(nextTime, outCtx.currentTime + 0.05);
+  src.start(nextTime); nextTime += buf.duration;
+  sources.push(src);
+  src.onended = () => { sources = sources.filter((x) => x !== src); };
+}
+function newTurn() {
+  turn = document.createElement("div"); turn.className = "turn";
+  turn.innerHTML = '<div class="you">You: <i>…</i></div><div class="it"></div><div class="meta"></div>';
+  log.prepend(turn);
+}
+function connect() {
+  ws = new WebSocket((location.protocol === "https:" ? "wss://" : "ws://") + location.host + "/ws");
+  ws.onopen = () => ws.send(JSON.stringify({ type: "hello" }));
+  ws.onmessage = (ev) => {
+    const m = JSON.parse(ev.data);
+    if (m.id !== undefined && m.id !== currentId) return;  // leftovers of an interrupted answer
+    if (m.id === "disclaimer" && !turn) { newTurn(); turn.querySelector(".you").textContent = ""; }
+    if (m.type === "ready") { status.textContent = "Ready."; btn.disabled = false; btn.hidden = false; $("start").hidden = true; }
+    else if (m.type === "busy") status.textContent = "The assistant is talking to someone else. Try again in a minute.";
+    else if (m.type === "heard" && turn) turn.querySelector(".you").textContent = "You: " + m.text;
+    else if (m.type === "queued") status.textContent = "One moment…";
+    else if (m.type === "text" && turn) turn.querySelector(".it").textContent += m.text;
+    else if (m.type === "audio") {
+      if (turn && !turn.dataset.first) { turn.dataset.first = 1; turn.querySelector(".meta").textContent = `first audio ${((performance.now() - t0) / 1000).toFixed(2)} s`; }
+      play(m.data);
+    }
+    else if (m.type === "done" && m.empty) { status.textContent = "I didn't hear anything. Hold the button while you speak."; if (turn) turn.remove(); turn = null; }
+    else if (m.type === "done") { status.textContent = m.rephrase ? "Ready (it asked you to rephrase)." : "Ready."; }
+    else if (m.type === "limit") status.textContent = "Session limit reached: reload the page to start again.";
+    else if (m.type === "error") status.textContent = "Error: " + m.message;
+  };
+  ws.onclose = () => { btn.disabled = true; status.textContent = "Disconnected. Reload the page to reconnect."; };
+}
+async function setupAudio() {
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, channelCount: 1 } });
+  micCtx = new AudioContext({ sampleRate: 16000 });
+  await micCtx.audioWorklet.addModule("mic-processor.js");
+  micNode = new AudioWorkletNode(micCtx, "mic-processor");
+  micNode.port.onmessage = (ev) => {
+    if (!talking || ws.readyState !== 1) return;
+    const f = ev.data, pcm = new Int16Array(f.length);
+    for (let i = 0; i < f.length; i++) pcm[i] = Math.max(-1, Math.min(1, f[i])) * 32767;
+    ws.send(JSON.stringify({ type: "audio", data: b64(pcm) }));
+  };
+  micCtx.createMediaStreamSource(stream).connect(micNode);
+  outCtx = new AudioContext({ sampleRate: 24000 });
+}
+async function start() {
+  if (talking || btn.disabled) return;
+  if (!micCtx) await setupAudio();
+  await micCtx.resume(); await outCtx.resume();
+  if (sources.length) { ws.send(JSON.stringify({ type: "stop" })); stopPlayback(); }  // interrupt
+  currentId = null;  // until this question is sent, ignore whatever is still arriving
+  talking = true; btn.classList.add("on"); btn.textContent = "Listening… release to send";
+  newTurn();
+}
+function end() {
+  if (!talking) return;
+  talking = false; btn.classList.remove("on"); btn.textContent = "Hold to talk";
+  t0 = performance.now();
+  currentId = ++qid;
+  ws.send(JSON.stringify({ type: "end", id: currentId })); status.textContent = "Thinking…";
+}
+btn.addEventListener("pointerdown", start);
+btn.addEventListener("pointerup", end);
+btn.addEventListener("pointerleave", end);
+document.addEventListener("keydown", (e) => { if (e.code === "Space" && !e.repeat) { e.preventDefault(); start(); } });
+document.addEventListener("keyup", (e) => { if (e.code === "Space") { e.preventDefault(); end(); } });
+$("start").addEventListener("click", async () => {  // a click first: browsers only play sound after one
+  $("start").disabled = true; status.textContent = "Connecting…";
+  await setupAudio(); await outCtx.resume();
+  connect();
+});
+</script>
+</body>
+</html>
