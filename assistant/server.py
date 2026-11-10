@@ -127,6 +127,7 @@ def make_app(cfg, assistant):
         loop = asyncio.get_running_loop()
         stop = threading.Event()
         started, turns, question = time.time(), 0, []
+        last = {}  # this conversation's previous question and topic, for follow-ups
         try:
             hello = json.loads(await asyncio.wait_for(sock.receive_text(), 15))
             if cfg.turnstile_secret:
@@ -162,7 +163,7 @@ def make_app(cfg, assistant):
                     t0 = time.time()
                     try:
                         heard = await asyncio.to_thread(assistant.rag.transcribe, assistant.whisper, wav)
-                        prep = await asyncio.to_thread(assistant.rag.prepare, heard)
+                        prep = await asyncio.to_thread(assistant.rag.prepare, heard, last.get("prev"))
                     except Exception as ex:  # never leave the visitor waiting in silence
                         print(f"   error before answering: {ex!r}", flush=True)
                         await sock.send_json({"type": "error", "id": qid, "message": "something went wrong"})
@@ -172,7 +173,10 @@ def make_app(cfg, assistant):
                         await sock.send_json({"type": "done", "id": qid, "empty": True, "rephrase": False, "stopped": False, "stats": {}})
                         return
                     if cfg.log_questions:  # testing: what was heard and retrieved (visitors' questions, so off by default)
-                        print(f"heard {heard!r} -> {prep['topics']} score {prep['scores'][0]:.3f} margin {prep['margin']:.3f}", flush=True)
+                        print(f"heard {heard!r} -> {prep['topics']} score {prep['scores'][0]:.3f} margin {prep['margin']:.3f}"
+                              + (f" (follow-up: {prep['followup']})" if prep.get("followup") else ""), flush=True)
+                    if prep["confident"]:  # remembered for a follow-up question ("and before that?")
+                        last["prev"] = {"q": heard, "topic": prep["topics"][0]}
                 if not batcher.free:  # every slot answering someone: this one starts when a slot frees up
                     await sock.send_json({"type": "queued", "id": qid, "position": batcher.pending.qsize() + 1})
                 batcher.submit(AnswerSeq(assistant, wav, emit, stop.is_set, rag=prep))

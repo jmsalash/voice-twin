@@ -17,6 +17,14 @@ import json
 import os
 import re
 
+# follow-up questions (rag.py, prepare): "and before that?" steps through the timeline; "what did you do there?"
+# is searched together with the previous question
+BEFORE = re.compile(r"\b(before (that|then|this|it)|earlier|previous(ly)?|prior to that)\b", re.I)
+AFTER = re.compile(r"\b(after (that|this|it)|afterwards|then what|and then|next|later|what came next)\b", re.I)
+# a bare "why?" / "how?" / "tell me more" is always about the previous answer, however well it matches on its own
+BARE = re.compile(r"^\W*(and\s+|so\s+)?(why|how|how so|really|when|where|what else|tell me more|go on|in what way)\W*$", re.I)
+REFERS = re.compile(r"\b(that|there|it|this|those|they|them|then)\b|^\W*(why|how|when|where|really|and)\W*$", re.I)
+
 import numpy as np
 
 from retrieval import Retriever
@@ -54,6 +62,11 @@ class RagFront:
         vocab = os.path.join(rag_dir, "vocabulary.txt")  # names, one per line (package_assistant.py --vocabulary)
         names = [l.strip() for l in open(vocab, encoding="utf-8") if l.strip()] if os.path.exists(vocab) else []
         self.vocabulary = ("Questions about " + ", ".join(names) + ".") if names else None
+        # timeline.json: {"sequences": [[topic, topic, ...], ...]}, each list in time order (jobs, places, studies),
+        # for "and before that?" / "what came next?"
+        tl = os.path.join(rag_dir, "timeline.json")
+        self.sequences = [[t for t in q if t in a] for q in json.load(open(tl, encoding="utf-8"))["sequences"]] \
+            if os.path.exists(tl) else []
         # ASR_MODEL: a faster-whisper model folder (e.g. large-v3-turbo) for the transcript, which hears short
         # questions better than the model's own Whisper small; 8-bit weights, so it is fast on older GPUs too
         self.asr = None
@@ -77,9 +90,31 @@ class RagFront:
                                      condition_on_previous_text=False, without_timestamps=True)
         return r["text"].strip()
 
-    def prepare(self, question_text):
-        """-> dict(topics, scores, margin, confident, ctx_ids, starts) for AnswerSeq."""
+    def neighbour(self, topic, step):
+        """The topic before (step -1) or after (+1) this one in a timeline, or None."""
+        for q in self.sequences:
+            if topic in q:
+                i = q.index(topic) + step
+                return q[i] if 0 <= i < len(q) else None
+        return None
+
+    def prepare(self, question_text, prev=None):
+        """-> dict(topics, scores, margin, confident, ctx_ids, starts, followup) for AnswerSeq.
+        prev: {"q": the previous question, "topic": its answer's topic}, for follow-up questions."""
         found = self.retriever.search(question_text, k=self.k)
+        followup = None
+        if prev and BARE.match(question_text):
+            found, followup = self.retriever.search(prev["q"] + " " + question_text, k=self.k), "bare follow-up"
+        elif prev and found[0][1] < self.min_score:  # weak on its own: maybe it refers to the previous question
+            step = -1 if BEFORE.search(question_text) else 1 if AFTER.search(question_text) else 0
+            near = self.neighbour(prev["topic"], step) if step else None
+            if near:  # "and before that?": the previous topic's neighbour in time, as a sure match
+                found = [(near, max(self.rescue_score, found[0][1]))] + [x for x in found if x[0] != near][: self.k - 1]
+                followup = f"timeline {'before' if step < 0 else 'after'} {prev['topic']}"
+            elif REFERS.search(question_text) or len(words(question_text)) <= 4:
+                both = self.retriever.search(prev["q"] + " " + question_text, k=self.k)
+                if both[0][1] > found[0][1]:
+                    found, followup = both, "with the previous question"
         topics = [t for t, _ in found]
         scores = [s for _, s in found]
         margin = scores[0] - scores[1] if len(scores) > 1 else 1.0
@@ -91,7 +126,7 @@ class RagFront:
         rescue = topics[0] if scores[0] >= self.rescue_score and topics[0] in self.clips else None
         return {"topics": topics, "scores": scores, "margin": margin, "confident": confident,
                 "ctx_ids": self.tok.encode(ctx).ids, "allowed": [words(x) for x in allowed],
-                "allowed_text": allowed, "rescue": rescue}
+                "allowed_text": allowed, "rescue": rescue, "followup": followup}
 
     def answer_for(self, rag, text_words, n):
         """Which allowed answer the text starts like: a topic, "_redirect", or None."""

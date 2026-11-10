@@ -153,7 +153,8 @@ python finetune/package_assistant.py --ckpt work/ckpt --out /path/to/my-assistan
     --retriever work/retriever --clips work/cv/answers_ov --fixed-lines work/voice
 ```
 
-`work/voice/` holds the fixed lines in the assistant's voice: `disclaimer.wav/.txt` (first person) and
+Optional `finetune/data/timeline.json` lists topics in time order (`{"sequences": [[first_job, second_job, ...],
+[first_degree, ...]]}`) so that "and before that?" works. `work/voice/` holds the fixed lines in the assistant's voice: `disclaimer.wav/.txt` (first person) and
 `rephrase.wav/.txt`, `rephrase_1.wav/.txt`, ... (said in turn when the assistant isn't sure).
 
 Run the server with Docker (`assistant/docker-compose.yml`, settings in `assistant/.env`, see `.env.example`) or
@@ -195,7 +196,10 @@ For the website side (protocol, hands-free client with voice activity detection,
 ## Limitations
 
 * **English only.**
-* **Single turn**: each answer only sees the current question, so "and before that?" doesn't work.
+* **Simple follow-ups only.** The server remembers the previous question of each conversation: "and before
+  that?" / "what came next?" step through `timeline.json`, and "what did you do there?", "why?" or "tell me more"
+  are searched together with the previous question. But each topic has one answer, so "tell me more" repeats it:
+  deeper follow-ups need second-level topics in the Q&A.
 * **Fixed answers**: it says what was written and recorded, nothing else. That is the point (no invented facts),
   but it means the Q&A has to cover what visitors ask.
 * **Short questions** are the hardest to hear (e.g. "Why AI?"); `ASR_MODEL` helps.

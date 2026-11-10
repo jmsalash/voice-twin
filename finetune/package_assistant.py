@@ -10,7 +10,8 @@
   OUT/rag/retriever/                           the fine-tuned embedding model
   OUT/rag/index.json                           [[wording, topic]]: training wordings + extra text-only ones
   OUT/rag/answers.json                         {topic: answer}, and {"_redirects": [...]} for off-topic replies
-  OUT/rag/clips/<topic>.wav                    recorded answers: played when the generated voice stops early
+  OUT/rag/clips/<topic>.wav                    recorded answers (played for the answer the model chooses)
+  OUT/rag/timeline.json                        optional: topics in time order, for "and before that?" (--timeline)
 """
 
 import argparse
@@ -34,6 +35,8 @@ def main():
     ap.add_argument("--clips", default=os.path.join(C.WORK, "answers_v4"))
     ap.add_argument("--fixed-lines", default="", help="folder with rephrase.wav/.txt and (first person) disclaimer.wav/.txt "
                     "in the assistant's voice; overrides the checkpoint's")
+    ap.add_argument("--timeline", default=os.path.join(HERE, "data", "timeline.json"),
+                    help='{"sequences": [[topic, ...], ...]}: topics in time order (jobs, studies, places), for follow-ups')
     ap.add_argument("--vocabulary", default=os.path.join(HERE, "data", "vocabulary.txt"),
                     help="names visitors will say (companies, products, places), one per line: a hint for Whisper")
     args = ap.parse_args()
@@ -77,6 +80,13 @@ def main():
               ensure_ascii=False, indent=1)
     if args.vocabulary and os.path.exists(args.vocabulary):
         shutil.copy(args.vocabulary, os.path.join(rag, "vocabulary.txt"))
+    if args.timeline and os.path.exists(args.timeline):
+        tl = json.load(open(args.timeline, encoding="utf-8"))
+        unknown = [t for q in tl["sequences"] for t in q if t not in answers]
+        if unknown:
+            print(f"warning: {args.timeline}: no topics {unknown}, left out of the timeline")
+        json.dump({"sequences": [[t for t in q if t in answers] for q in tl["sequences"]]},
+                  open(os.path.join(rag, "timeline.json"), "w", encoding="utf-8"), indent=1)
     n = 0
     for t in answers:
         clip = os.path.join(args.clips, t + ".wav")
